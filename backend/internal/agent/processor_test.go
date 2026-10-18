@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/AndreyPiganov/test-task-expenses/backend/internal/currency"
 	"github.com/AndreyPiganov/test-task-expenses/backend/internal/domain"
 	"github.com/AndreyPiganov/test-task-expenses/backend/internal/service"
 	"github.com/google/uuid"
@@ -51,6 +52,53 @@ func TestProcessorCreatesExpenseForTelegramUser(t *testing.T) {
 	}
 	if !strings.Contains(llm.systemPrompt, "2026-10-16") {
 		t.Errorf("system prompt does not contain current date: %q", llm.systemPrompt)
+	}
+	if !strings.Contains(llm.systemPrompt, "краткое назначение расхода") {
+		t.Error("system prompt does not explain how to extract an expense comment")
+	}
+	if !strings.Contains(llm.systemPrompt, "Самостоятельно валюту не пересчитывай") {
+		t.Error("system prompt does not delegate currency conversion to the backend")
+	}
+}
+
+func TestProcessorConvertsForeignCurrencyExpenseToRubles(t *testing.T) {
+	t.Parallel()
+
+	llm := &fakeLLM{response: `{
+		"action":"create_expense",
+		"amount":"100",
+		"currency":"USD",
+		"category":"покупки",
+		"spent_at":"2026-10-18",
+		"comment":"наушники"
+	}`}
+	expenses := &fakeExpenseCreator{}
+	converter := &fakeCurrencyConverter{conversion: currency.Conversion{
+		AmountRUB: decimal.RequireFromString("8125.50"),
+		Rate:      decimal.RequireFromString("81.255"),
+		RateDate:  time.Date(2026, time.October, 17, 0, 0, 0, 0, time.UTC),
+	}}
+	processor := NewProcessor(llm, expenses, time.UTC, converter)
+
+	response, err := processor.Process(context.Background(), 123, "купил наушники за 100 долларов")
+	if err != nil {
+		t.Fatalf("Process() returned an error: %v", err)
+	}
+	if converter.currencyCode != "USD" || !converter.amount.Equal(decimal.NewFromInt(100)) {
+		t.Fatalf("converter input = %s %s, want 100 USD", converter.amount, converter.currencyCode)
+	}
+	if got := converter.date.Format(dateLayout); got != "2026-10-18" {
+		t.Errorf("converter date = %s, want 2026-10-18", got)
+	}
+	if !expenses.input.Amount.Equal(decimal.RequireFromString("8125.50")) {
+		t.Errorf("saved amount = %s, want 8125.50 RUB", expenses.input.Amount)
+	}
+	if expenses.input.Comment != "наушники" {
+		t.Errorf("saved comment = %q, want наушники", expenses.input.Comment)
+	}
+	if !strings.Contains(response, "8125.5 ₽") || !strings.Contains(response, "из 100 USD") ||
+		!strings.Contains(response, "17.10.2026") {
+		t.Errorf("response = %q, want conversion details", response)
 	}
 }
 
@@ -211,6 +259,25 @@ type fakeLLM struct {
 func (l *fakeLLM) Complete(_ context.Context, systemPrompt, _ string) (string, error) {
 	l.systemPrompt = systemPrompt
 	return l.response, nil
+}
+
+type fakeCurrencyConverter struct {
+	conversion   currency.Conversion
+	amount       decimal.Decimal
+	currencyCode string
+	date         time.Time
+}
+
+func (c *fakeCurrencyConverter) ToRubles(
+	_ context.Context,
+	amount decimal.Decimal,
+	currencyCode string,
+	date time.Time,
+) (currency.Conversion, error) {
+	c.amount = amount
+	c.currencyCode = currencyCode
+	c.date = date
+	return c.conversion, nil
 }
 
 type fakeExpenseCreator struct {

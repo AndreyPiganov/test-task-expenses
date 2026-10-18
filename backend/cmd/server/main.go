@@ -14,6 +14,7 @@ import (
 
 	"github.com/AndreyPiganov/test-task-expenses/backend/internal/agent"
 	"github.com/AndreyPiganov/test-task-expenses/backend/internal/config"
+	"github.com/AndreyPiganov/test-task-expenses/backend/internal/currency"
 	"github.com/AndreyPiganov/test-task-expenses/backend/internal/database"
 	"github.com/AndreyPiganov/test-task-expenses/backend/internal/httpapi"
 	"github.com/AndreyPiganov/test-task-expenses/backend/internal/repository/postgres"
@@ -73,7 +74,12 @@ func run(ctx context.Context, logger *slog.Logger) error {
 		logger.Info("LLM expense processor is disabled: LLM_BASE_URL or LLM_MODEL is empty")
 	} else {
 		llmClient := agent.NewClient(cfg.LLMBaseURL, cfg.LLMAPIKey, cfg.LLMModel)
-		messageProcessor = agent.NewProcessor(llmClient, expenseService, cfg.AppTimezone)
+		messageProcessor = agent.NewProcessor(
+			llmClient,
+			expenseService,
+			cfg.AppTimezone,
+			currency.NewCBRClient(),
+		)
 		logger.Info("LLM expense processor configured", "model", cfg.LLMModel)
 	}
 

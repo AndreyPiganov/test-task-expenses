@@ -56,6 +56,10 @@ func TestProcessorCreatesExpenseForTelegramUser(t *testing.T) {
 	if !strings.Contains(llm.systemPrompt, "краткое назначение расхода") {
 		t.Error("system prompt does not explain how to extract an expense comment")
 	}
+	if !strings.Contains(llm.systemPrompt, "«купил шоколадку» → еда") ||
+		!strings.Contains(llm.systemPrompt, "одновременно под «покупки», выбирай конкретную категорию") {
+		t.Error("system prompt does not prioritize a specific expense category over shopping")
+	}
 	if !strings.Contains(llm.systemPrompt, "самостоятельно ничего не пересчитывай") {
 		t.Error("system prompt does not delegate currency conversion to the backend")
 	}

@@ -56,8 +56,15 @@ func TestProcessorCreatesExpenseForTelegramUser(t *testing.T) {
 	if !strings.Contains(llm.systemPrompt, "краткое назначение расхода") {
 		t.Error("system prompt does not explain how to extract an expense comment")
 	}
-	if !strings.Contains(llm.systemPrompt, "Самостоятельно валюту не пересчитывай") {
+	if !strings.Contains(llm.systemPrompt, "самостоятельно ничего не пересчитывай") {
 		t.Error("system prompt does not delegate currency conversion to the backend")
+	}
+	if !strings.Contains(llm.systemPrompt, "поле currency обязательно") ||
+		!strings.Contains(llm.systemPrompt, "код ISO 4217") {
+		t.Error("system prompt does not require an ISO 4217 currency code")
+	}
+	if !strings.Contains(llm.systemPrompt, `«я потратил 500» → amount="500", currency="RUB"`) {
+		t.Error("system prompt does not default an unspecified currency to RUB")
 	}
 }
 
@@ -99,6 +106,74 @@ func TestProcessorConvertsForeignCurrencyExpenseToRubles(t *testing.T) {
 	if !strings.Contains(response, "8125.5 ₽") || !strings.Contains(response, "из 100 USD") ||
 		!strings.Contains(response, "17.10.2026") {
 		t.Errorf("response = %q, want conversion details", response)
+	}
+}
+
+func TestProcessorRecognizesHryvniaFromMessageWhenLLMMissesCurrency(t *testing.T) {
+	t.Parallel()
+
+	llm := &fakeLLM{response: `{
+		"action":"create_expense",
+		"amount":"500",
+		"currency":"RUB",
+		"category":"еда",
+		"spent_at":"2026-10-19",
+		"comment":"продукты"
+	}`}
+	expenses := &fakeExpenseCreator{}
+	converter := &fakeCurrencyConverter{conversion: currency.Conversion{
+		AmountRUB: decimal.RequireFromString("931.94"),
+		Rate:      decimal.RequireFromString("1.86387"),
+		RateDate:  time.Date(2026, time.October, 17, 0, 0, 0, 0, time.UTC),
+	}}
+	processor := NewProcessor(llm, expenses, time.UTC, converter)
+
+	response, err := processor.Process(context.Background(), 123, "Купил продуктов на 500 гривен")
+	if err != nil {
+		t.Fatalf("Process() returned an error: %v", err)
+	}
+	if converter.currencyCode != "UAH" {
+		t.Fatalf("converter currency = %q, want UAH", converter.currencyCode)
+	}
+	if !expenses.input.Amount.Equal(decimal.RequireFromString("931.94")) {
+		t.Errorf("saved amount = %s, want 931.94 RUB", expenses.input.Amount)
+	}
+	if !strings.Contains(response, "из 500 UAH") {
+		t.Errorf("response = %q, want UAH conversion details", response)
+	}
+}
+
+func TestProcessorRecognizesTengeFromMessageWhenLLMMissesCurrency(t *testing.T) {
+	t.Parallel()
+
+	llm := &fakeLLM{response: `{
+		"action":"create_expense",
+		"amount":"1000",
+		"currency":"RUB",
+		"category":"покупки",
+		"spent_at":"2026-10-19",
+		"comment":"сувениры"
+	}`}
+	expenses := &fakeExpenseCreator{}
+	converter := &fakeCurrencyConverter{conversion: currency.Conversion{
+		AmountRUB: decimal.RequireFromString("184.12"),
+		Rate:      decimal.RequireFromString("0.184123"),
+		RateDate:  time.Date(2026, time.October, 17, 0, 0, 0, 0, time.UTC),
+	}}
+	processor := NewProcessor(llm, expenses, time.UTC, converter)
+
+	response, err := processor.Process(context.Background(), 123, "Купил сувениры за 1000 тенге")
+	if err != nil {
+		t.Fatalf("Process() returned an error: %v", err)
+	}
+	if converter.currencyCode != "KZT" {
+		t.Fatalf("converter currency = %q, want KZT", converter.currencyCode)
+	}
+	if !expenses.input.Amount.Equal(decimal.RequireFromString("184.12")) {
+		t.Errorf("saved amount = %s, want 184.12 RUB", expenses.input.Amount)
+	}
+	if !strings.Contains(response, "из 1000 KZT") {
+		t.Errorf("response = %q, want KZT conversion details", response)
 	}
 }
 

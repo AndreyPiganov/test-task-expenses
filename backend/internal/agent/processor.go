@@ -67,7 +67,7 @@ func (p *Processor) Process(ctx context.Context, userID int64, message string) (
 
 	switch command.Action {
 	case actionCreateExpense:
-		return p.createExpense(ctx, userID, command)
+		return p.createExpense(ctx, userID, message, command)
 	case actionListExpenses:
 		return p.listExpenses(ctx, userID, command)
 	case actionSummarizeExpenses:
@@ -323,6 +323,7 @@ func (p *Processor) updateInput(command parsedCommand) (service.UpdateExpenseInp
 func (p *Processor) createExpense(
 	ctx context.Context,
 	userID int64,
+	message string,
 	command parsedCommand,
 ) (string, error) {
 	originalAmount, err := decimal.NewFromString(command.Amount)
@@ -339,7 +340,7 @@ func (p *Processor) createExpense(
 	}
 
 	amount := originalAmount
-	currencyCode := normalizeCurrency(command.Currency)
+	currencyCode := resolveCurrency(message, command.Currency)
 	var conversion *currency.Conversion
 	if currencyCode != "RUB" {
 		if p.currencyConverter == nil {
@@ -453,7 +454,7 @@ func systemPrompt(now time.Time) string {
 
 Допустимые категории: еда, транспорт, жильё, развлечения, здоровье, покупки, другое.
 Для create_expense: если дата не указана, используй текущую дату. Никогда не придумывай сумму.
-Для create_expense оставляй amount в исходной валюте и заполняй currency: рубли/₽ — RUB, доллары/$ — USD, евро/€ — EUR. Самостоятельно валюту не пересчитывай. Если обозначение валюты неоднозначно, верни action=clarify.
+Для create_expense поле currency обязательно и не может быть пустым. Определи валюту по названию, сокращению или символу и верни её трёхбуквенный код ISO 4217 в верхнем регистре — тот же код используется в CharCode Банка России и currency-конвертере backend-а. Примеры, не ограничивающие остальные валюты: рубли/руб./₽ → RUB; доллары США/доллары/$ → USD; евро/€ → EUR; гривна/гривны/гривен/грн/₴ → UAH; тенге/₸ → KZT; юани → CNY; иены → JPY; фунты стерлингов/£ → GBP. Если валюта в сообщении не указана, всегда верни RUB: например, «я потратил 500» → amount="500", currency="RUB". Оставляй amount в исходной валюте и самостоятельно ничего не пересчитывай. Не возвращай название валюты или локальное сокращение вместо ISO-кода. Если обозначение допускает несколько валют и контекста недостаточно, верни action=clarify, а не угадывай.
 Для create_expense comment — краткое назначение расхода из сообщения без суммы, валюты и даты. Не придумывай отсутствующие детали. Примеры: «кофе 350» → comment="кофе"; «такси домой 1200 вчера» → comment="такси домой"; «потратил 500» → comment="".
 Для «покажи расходы» используй list_expenses, для «сколько/итого» — summarize_expenses.
 Преобразуй «сегодня», «вчера», «эта неделя», «этот месяц» и конкретные даты в абсолютные date_from/date_to.
@@ -501,6 +502,45 @@ func normalizeCurrency(value string) string {
 		return "RUB"
 	}
 	return value
+}
+
+func resolveCurrency(message, llmCurrency string) string {
+	message = strings.ToLower(message)
+	for _, alias := range explicitCurrencyAliases {
+		for _, fragment := range alias.fragments {
+			if strings.Contains(message, fragment) {
+				return alias.code
+			}
+		}
+		for _, word := range alias.words {
+			if containsWord(message, word) {
+				return alias.code
+			}
+		}
+	}
+	return normalizeCurrency(llmCurrency)
+}
+
+type currencyAlias struct {
+	code      string
+	fragments []string
+	words     []string
+}
+
+var explicitCurrencyAliases = []currencyAlias{
+	{code: "UAH", fragments: []string{"грив", "₴"}, words: []string{"грн", "uah"}},
+	{code: "KZT", fragments: []string{"₸"}, words: []string{"тенге", "kzt"}},
+}
+
+func containsWord(text, target string) bool {
+	for _, word := range strings.FieldsFunc(text, func(r rune) bool {
+		return !((r >= 'a' && r <= 'z') || (r >= 'а' && r <= 'я') || r == 'ё')
+	}) {
+		if word == target {
+			return true
+		}
+	}
+	return false
 }
 
 func formatExpenseLine(expense domain.Expense) string {

@@ -14,9 +14,9 @@ import (
 func (p *Processor) listExpenses(
 	ctx context.Context,
 	userID int64,
-	command parsedCommand,
+	arguments expenseFilterArguments,
 ) (string, error) {
-	filter, err := p.filterFromCommand(userID, command, 10)
+	filter, err := p.filterFromArguments(userID, arguments, 10)
 	if err != nil {
 		return "", err
 	}
@@ -45,9 +45,9 @@ func (p *Processor) listExpenses(
 func (p *Processor) summarizeExpenses(
 	ctx context.Context,
 	userID int64,
-	command parsedCommand,
+	arguments expenseFilterArguments,
 ) (string, error) {
-	filter, err := p.filterFromCommand(userID, command, 100)
+	filter, err := p.filterFromArguments(userID, arguments, 100)
 	if err != nil {
 		return "", err
 	}
@@ -77,33 +77,33 @@ func (p *Processor) summarizeExpenses(
 	return fmt.Sprintf("Итого: %s ₽. Количество расходов: %d.", totalAmount.String(), totalCount), nil
 }
 
-func (p *Processor) filterFromCommand(
+func (p *Processor) filterFromArguments(
 	userID int64,
-	command parsedCommand,
+	arguments expenseFilterArguments,
 	limit int,
 ) (service.ExpenseFilter, error) {
 	filter := service.ExpenseFilter{
 		UserID:       &userID,
-		CommentQuery: strings.TrimSpace(command.CommentQuery),
+		CommentQuery: optionalString(arguments.CommentQuery),
 		Limit:        limit,
 	}
 
-	if command.Category != "" {
-		category := domain.Category(command.Category)
+	if categoryValue := optionalString(arguments.Category); categoryValue != "" {
+		category := domain.Category(categoryValue)
 		if !category.Valid() {
-			return service.ExpenseFilter{}, fmt.Errorf("LLM returned unknown filter category %q", command.Category)
+			return service.ExpenseFilter{}, fmt.Errorf("LLM returned unknown filter category %q", categoryValue)
 		}
 		filter.Category = &category
 	}
-	if command.DateFrom != "" {
-		dateFrom, err := time.ParseInLocation(dateLayout, command.DateFrom, p.timezone)
+	if dateFromValue := optionalString(arguments.DateFrom); dateFromValue != "" {
+		dateFrom, err := time.ParseInLocation(dateLayout, dateFromValue, p.timezone)
 		if err != nil {
 			return service.ExpenseFilter{}, fmt.Errorf("parse LLM date_from: %w", err)
 		}
 		filter.DateFrom = &dateFrom
 	}
-	if command.DateTo != "" {
-		dateTo, err := time.ParseInLocation(dateLayout, command.DateTo, p.timezone)
+	if dateToValue := optionalString(arguments.DateTo); dateToValue != "" {
+		dateTo, err := time.ParseInLocation(dateLayout, dateToValue, p.timezone)
 		if err != nil {
 			return service.ExpenseFilter{}, fmt.Errorf("parse LLM date_to: %w", err)
 		}

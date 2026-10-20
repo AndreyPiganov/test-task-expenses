@@ -22,6 +22,17 @@ type Client struct {
 	httpClient *http.Client
 }
 
+type toolCall struct {
+	ID       string           `json:"id"`
+	Type     string           `json:"type"`
+	Function functionToolCall `json:"function"`
+}
+
+type functionToolCall struct {
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
+}
+
 func NewClient(baseURL, apiKey, model string) *Client {
 	return newClient(baseURL, apiKey, model, &http.Client{Timeout: 45 * time.Second})
 }
@@ -35,25 +46,34 @@ func newClient(baseURL, apiKey, model string, httpClient *http.Client) *Client {
 	}
 }
 
-func (c *Client) Complete(ctx context.Context, systemPrompt, userMessage string) (string, error) {
+func (c *Client) SelectTool(
+	ctx context.Context,
+	systemPrompt string,
+	userMessage string,
+	tools []toolDefinition,
+) (toolCall, error) {
 	payload := struct {
-		Model          string         `json:"model"`
-		Messages       []chatMessage  `json:"messages"`
-		Temperature    float64        `json:"temperature"`
-		ResponseFormat map[string]any `json:"response_format"`
+		Model             string           `json:"model"`
+		Messages          []chatMessage    `json:"messages"`
+		Temperature       float64          `json:"temperature"`
+		Tools             []toolDefinition `json:"tools"`
+		ToolChoice        string           `json:"tool_choice"`
+		ParallelToolCalls bool             `json:"parallel_tool_calls"`
 	}{
 		Model: c.model,
 		Messages: []chatMessage{
 			{Role: "system", Content: systemPrompt},
 			{Role: "user", Content: userMessage},
 		},
-		Temperature:    0,
-		ResponseFormat: map[string]any{"type": "json_object"},
+		Temperature:       0,
+		Tools:             tools,
+		ToolChoice:        "required",
+		ParallelToolCalls: false,
 	}
 
 	body, err := json.Marshal(payload)
 	if err != nil {
-		return "", fmt.Errorf("encode LLM request: %w", err)
+		return toolCall{}, fmt.Errorf("encode LLM request: %w", err)
 	}
 
 	request, err := http.NewRequestWithContext(
@@ -63,7 +83,7 @@ func (c *Client) Complete(ctx context.Context, systemPrompt, userMessage string)
 		bytes.NewReader(body),
 	)
 	if err != nil {
-		return "", fmt.Errorf("create LLM request: %w", err)
+		return toolCall{}, fmt.Errorf("create LLM request: %w", err)
 	}
 	request.Header.Set("Content-Type", "application/json")
 	if c.apiKey != "" {
@@ -72,33 +92,44 @@ func (c *Client) Complete(ctx context.Context, systemPrompt, userMessage string)
 
 	response, err := c.httpClient.Do(request)
 	if err != nil {
-		return "", sanitizedLLMRequestError(err)
+		return toolCall{}, sanitizedLLMRequestError(err)
 	}
 	defer response.Body.Close()
 
 	var result struct {
 		Choices []struct {
-			Message chatMessage `json:"message"`
+			Message struct {
+				ToolCalls []toolCall `json:"tool_calls"`
+			} `json:"message"`
 		} `json:"choices"`
 		Error *struct {
 			Message string `json:"message"`
 		} `json:"error,omitempty"`
 	}
 	if err := json.NewDecoder(io.LimitReader(response.Body, maxLLMResponseSize)).Decode(&result); err != nil {
-		return "", fmt.Errorf("decode LLM response: %w", err)
+		return toolCall{}, fmt.Errorf("decode LLM response: %w", err)
 	}
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 		message := http.StatusText(response.StatusCode)
 		if result.Error != nil && result.Error.Message != "" {
 			message = result.Error.Message
 		}
-		return "", fmt.Errorf("LLM returned status %d: %s", response.StatusCode, message)
+		return toolCall{}, fmt.Errorf("LLM returned status %d: %s", response.StatusCode, message)
 	}
-	if len(result.Choices) == 0 || strings.TrimSpace(result.Choices[0].Message.Content) == "" {
-		return "", errors.New("LLM returned an empty response")
+	if len(result.Choices) == 0 {
+		return toolCall{}, errors.New("LLM returned no choices")
+	}
+	calls := result.Choices[0].Message.ToolCalls
+	if len(calls) != 1 {
+		return toolCall{}, fmt.Errorf("LLM returned %d tool calls, want exactly one", len(calls))
+	}
+	call := calls[0]
+	if call.Type != "function" || strings.TrimSpace(call.Function.Name) == "" ||
+		strings.TrimSpace(call.Function.Arguments) == "" {
+		return toolCall{}, errors.New("LLM returned an invalid function tool call")
 	}
 
-	return result.Choices[0].Message.Content, nil
+	return call, nil
 }
 
 type chatMessage struct {

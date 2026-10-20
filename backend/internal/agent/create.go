@@ -17,23 +17,23 @@ func (p *Processor) createExpense(
 	ctx context.Context,
 	userID int64,
 	message string,
-	command parsedCommand,
+	arguments createExpenseArguments,
 ) (string, error) {
-	originalAmount, err := decimal.NewFromString(command.Amount)
+	originalAmount, err := decimal.NewFromString(arguments.Amount)
 	if err != nil {
 		return "", fmt.Errorf("parse LLM amount: %w", err)
 	}
-	category := domain.Category(command.Category)
+	category := domain.Category(arguments.Category)
 	if !category.Valid() {
-		return "", fmt.Errorf("LLM returned unknown category %q", command.Category)
+		return "", fmt.Errorf("LLM returned unknown category %q", arguments.Category)
 	}
-	spentAt, err := time.ParseInLocation(dateLayout, command.SpentAt, p.timezone)
+	spentAt, err := time.ParseInLocation(dateLayout, arguments.SpentAt, p.timezone)
 	if err != nil {
 		return "", fmt.Errorf("parse LLM spent_at: %w", err)
 	}
 
 	amount := originalAmount
-	currencyCode := resolveCurrency(message, command.Currency)
+	currencyCode := resolveCurrency(message, arguments.Currency)
 	var conversion *currency.Conversion
 	if currencyCode != "RUB" {
 		if p.currencyConverter == nil {
@@ -57,7 +57,7 @@ func (p *Processor) createExpense(
 		Amount:   amount,
 		Category: category,
 		SpentAt:  spentAt,
-		Comment:  command.Comment,
+		Comment:  arguments.Comment,
 	})
 	if err != nil {
 		return "", fmt.Errorf("create expense from Telegram: %w", err)

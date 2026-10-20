@@ -35,14 +35,14 @@ var categories = [...]Category{
 
 // Expense is a single spending record owned by one family member.
 type Expense struct {
-	ID        uuid.UUID       `json:"id"`
-	UserID    int64           `json:"user_id"`
-	Amount    decimal.Decimal `json:"amount"`
-	Category  Category        `json:"category"`
-	SpentAt   time.Time       `json:"spent_at"`
-	Comment   string          `json:"comment,omitempty"`
-	CreatedAt time.Time       `json:"created_at"`
-	UpdatedAt time.Time       `json:"updated_at"`
+	ID        uuid.UUID
+	UserID    int64
+	Amount    decimal.Decimal
+	Category  Category
+	SpentAt   time.Time
+	Comment   string
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
 func (e Expense) Validate() error {

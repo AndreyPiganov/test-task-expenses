@@ -13,7 +13,7 @@ import (
 )
 
 type LLM interface {
-	Complete(context.Context, string, string) (string, error)
+	SelectTool(context.Context, string, string, []toolDefinition) (toolCall, error)
 }
 
 type ExpenseService interface {
@@ -52,33 +52,61 @@ func NewProcessor(
 
 func (p *Processor) Process(ctx context.Context, userID int64, message string) (string, error) {
 	now := p.now().In(p.timezone)
-	raw, err := p.llm.Complete(ctx, systemPrompt(now), message)
+	call, err := p.llm.SelectTool(ctx, systemPrompt(now), message, expenseTools())
 	if err != nil {
-		return "", fmt.Errorf("complete expense command: %w", err)
+		return "", fmt.Errorf("select expense tool: %w", err)
 	}
 
-	command, err := parseCommand(raw)
-	if err != nil {
-		return "", err
-	}
-
-	switch command.Action {
-	case actionCreateExpense:
-		return p.createExpense(ctx, userID, message, command)
-	case actionListExpenses:
-		return p.listExpenses(ctx, userID, command)
-	case actionSummarizeExpenses:
-		return p.summarizeExpenses(ctx, userID, command)
-	case actionUpdateExpense:
-		return p.updateExpense(ctx, userID, message, command)
-	case actionDeleteExpense:
-		return p.deleteExpense(ctx, userID, message, command)
-	case actionClarify, actionUnsupported:
-		if strings.TrimSpace(command.Question) == "" {
+	switch call.Function.Name {
+	case toolCreateExpense:
+		arguments, decodeErr := decodeToolArguments[createExpenseArguments](call.Function.Arguments)
+		if decodeErr != nil {
+			return "", decodeErr
+		}
+		return p.createExpense(ctx, userID, message, arguments)
+	case toolListExpenses:
+		arguments, decodeErr := decodeToolArguments[expenseFilterArguments](call.Function.Arguments)
+		if decodeErr != nil {
+			return "", decodeErr
+		}
+		return p.listExpenses(ctx, userID, arguments)
+	case toolSummarizeExpenses:
+		arguments, decodeErr := decodeToolArguments[expenseFilterArguments](call.Function.Arguments)
+		if decodeErr != nil {
+			return "", decodeErr
+		}
+		return p.summarizeExpenses(ctx, userID, arguments)
+	case toolUpdateExpense:
+		arguments, decodeErr := decodeToolArguments[updateExpenseArguments](call.Function.Arguments)
+		if decodeErr != nil {
+			return "", decodeErr
+		}
+		return p.updateExpense(ctx, userID, message, arguments)
+	case toolDeleteExpense:
+		arguments, decodeErr := decodeToolArguments[deleteExpenseArguments](call.Function.Arguments)
+		if decodeErr != nil {
+			return "", decodeErr
+		}
+		return p.deleteExpense(ctx, userID, message, arguments)
+	case toolRequestClarification:
+		arguments, decodeErr := decodeToolArguments[messageArguments](call.Function.Arguments)
+		if decodeErr != nil {
+			return "", decodeErr
+		}
+		if strings.TrimSpace(arguments.Message) == "" {
 			return "Уточните сумму и назначение расхода, например: «кофе 350».", nil
 		}
-		return command.Question, nil
+		return arguments.Message, nil
+	case toolRespondUnsupported:
+		arguments, decodeErr := decodeToolArguments[messageArguments](call.Function.Arguments)
+		if decodeErr != nil {
+			return "", decodeErr
+		}
+		if strings.TrimSpace(arguments.Message) == "" {
+			return "Я помогаю только учитывать семейные расходы.", nil
+		}
+		return arguments.Message, nil
 	default:
-		return "", fmt.Errorf("unsupported LLM action %q", command.Action)
+		return "", fmt.Errorf("unsupported LLM tool %q", call.Function.Name)
 	}
 }

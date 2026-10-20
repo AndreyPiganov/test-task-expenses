@@ -49,32 +49,30 @@ func NewHandler(
 ) http.Handler {
 	api := &api{logger: logger, expenses: expenses, members: members}
 	mux := http.NewServeMux()
-	mux.HandleFunc("/health", health)
-	mux.HandleFunc("/ready", ready(readinessCheck))
-	mux.HandleFunc("/api/v1/expenses", api.expensesCollection)
-	mux.HandleFunc("/api/v1/expenses/", api.expenseItem)
-	mux.HandleFunc("/api/v1/members", api.familyMembers)
+	mux.HandleFunc("GET /health", health)
+	mux.HandleFunc("/health", methodNotAllowedHandler(http.MethodGet))
+	mux.HandleFunc("GET /ready", ready(readinessCheck))
+	mux.HandleFunc("/ready", methodNotAllowedHandler(http.MethodGet))
+	mux.HandleFunc("GET /api/v1/expenses", api.withExpenseService(api.listExpenses))
+	mux.HandleFunc("POST /api/v1/expenses", api.withExpenseService(api.createExpense))
+	mux.HandleFunc("/api/v1/expenses", methodNotAllowedHandler("GET, POST"))
+	mux.HandleFunc("GET /api/v1/expenses/{id}", api.withExpenseID(api.getExpense))
+	mux.HandleFunc("PATCH /api/v1/expenses/{id}", api.withExpenseID(api.updateExpense))
+	mux.HandleFunc("DELETE /api/v1/expenses/{id}", api.withExpenseID(api.deleteExpense))
+	mux.HandleFunc("/api/v1/expenses/{id}", methodNotAllowedHandler("GET, PATCH, DELETE"))
+	mux.HandleFunc("GET /api/v1/members", api.familyMembers)
+	mux.HandleFunc("/api/v1/members", methodNotAllowedHandler(http.MethodGet))
 	mux.HandleFunc("/", notFound)
 
 	return recoverPanic(logger, logRequest(logger, mux))
 }
 
 func health(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		methodNotAllowed(w, http.MethodGet)
-		return
-	}
-
 	writeJSON(w, http.StatusOK, statusResponse{Status: "ok"})
 }
 
 func ready(check ReadinessCheck) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			methodNotAllowed(w, http.MethodGet)
-			return
-		}
-
 		if check != nil {
 			ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 			defer cancel()
@@ -96,6 +94,12 @@ func notFound(w http.ResponseWriter, _ *http.Request) {
 func methodNotAllowed(w http.ResponseWriter, allowedMethod string) {
 	w.Header().Set("Allow", allowedMethod)
 	writeJSON(w, http.StatusMethodNotAllowed, errorResponse{Error: "method not allowed"})
+}
+
+func methodNotAllowedHandler(allowedMethods string) http.HandlerFunc {
+	return func(w http.ResponseWriter, _ *http.Request) {
+		methodNotAllowed(w, allowedMethods)
+	}
 }
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {

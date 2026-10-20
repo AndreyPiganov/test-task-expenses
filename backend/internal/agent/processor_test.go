@@ -20,14 +20,13 @@ func TestProcessorCreatesExpenseForTelegramUser(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load timezone: %v", err)
 	}
-	llm := &fakeLLM{response: `{
-		"action":"create_expense",
+	llm := &fakeLLM{call: fakeFunctionCall(toolCreateExpense, `{
 		"amount":"1200",
+		"currency":"RUB",
 		"category":"транспорт",
 		"spent_at":"2026-10-15",
-		"comment":"такси",
-		"question":""
-	}`}
+		"comment":"такси"
+	}`)}
 	expenses := &fakeExpenseCreator{}
 	processor := NewProcessor(llm, expenses, timezone)
 	processor.now = func() time.Time {
@@ -53,36 +52,37 @@ func TestProcessorCreatesExpenseForTelegramUser(t *testing.T) {
 	if !strings.Contains(llm.systemPrompt, "2026-10-16") {
 		t.Errorf("system prompt does not contain current date: %q", llm.systemPrompt)
 	}
-	if !strings.Contains(llm.systemPrompt, "краткое назначение расхода") {
+	if !strings.Contains(llm.systemPrompt, "краткое назначение") {
 		t.Error("system prompt does not explain how to extract an expense comment")
 	}
-	if !strings.Contains(llm.systemPrompt, "«купил шоколадку» → еда") ||
-		!strings.Contains(llm.systemPrompt, "одновременно под «покупки», выбирай конкретную категорию") {
+	if !strings.Contains(llm.systemPrompt, "шоколадка и продукты — еда") ||
+		!strings.Contains(llm.systemPrompt, "Если подходит конкретная категория и «покупки»") {
 		t.Error("system prompt does not prioritize a specific expense category over shopping")
 	}
 	if !strings.Contains(llm.systemPrompt, "самостоятельно ничего не пересчитывай") {
 		t.Error("system prompt does not delegate currency conversion to the backend")
 	}
-	if !strings.Contains(llm.systemPrompt, "поле currency обязательно") ||
-		!strings.Contains(llm.systemPrompt, "код ISO 4217") {
+	if !strings.Contains(llm.systemPrompt, "currency возвращай кодом ISO 4217") {
 		t.Error("system prompt does not require an ISO 4217 currency code")
 	}
-	if !strings.Contains(llm.systemPrompt, `«я потратил 500» → amount="500", currency="RUB"`) {
+	if !strings.Contains(llm.systemPrompt, "валюта не указана — RUB") {
 		t.Error("system prompt does not default an unspecified currency to RUB")
+	}
+	if len(llm.tools) != 7 {
+		t.Fatalf("tools = %d, want 7 expense tools", len(llm.tools))
 	}
 }
 
 func TestProcessorConvertsForeignCurrencyExpenseToRubles(t *testing.T) {
 	t.Parallel()
 
-	llm := &fakeLLM{response: `{
-		"action":"create_expense",
+	llm := &fakeLLM{call: fakeFunctionCall(toolCreateExpense, `{
 		"amount":"100",
 		"currency":"USD",
 		"category":"покупки",
 		"spent_at":"2026-10-18",
 		"comment":"наушники"
-	}`}
+	}`)}
 	expenses := &fakeExpenseCreator{}
 	converter := &fakeCurrencyConverter{conversion: currency.Conversion{
 		AmountRUB: decimal.RequireFromString("8125.50"),
@@ -116,14 +116,13 @@ func TestProcessorConvertsForeignCurrencyExpenseToRubles(t *testing.T) {
 func TestProcessorRecognizesHryvniaFromMessageWhenLLMMissesCurrency(t *testing.T) {
 	t.Parallel()
 
-	llm := &fakeLLM{response: `{
-		"action":"create_expense",
+	llm := &fakeLLM{call: fakeFunctionCall(toolCreateExpense, `{
 		"amount":"500",
 		"currency":"RUB",
 		"category":"еда",
 		"spent_at":"2026-10-19",
 		"comment":"продукты"
-	}`}
+	}`)}
 	expenses := &fakeExpenseCreator{}
 	converter := &fakeCurrencyConverter{conversion: currency.Conversion{
 		AmountRUB: decimal.RequireFromString("931.94"),
@@ -150,14 +149,13 @@ func TestProcessorRecognizesHryvniaFromMessageWhenLLMMissesCurrency(t *testing.T
 func TestProcessorRecognizesTengeFromMessageWhenLLMMissesCurrency(t *testing.T) {
 	t.Parallel()
 
-	llm := &fakeLLM{response: `{
-		"action":"create_expense",
+	llm := &fakeLLM{call: fakeFunctionCall(toolCreateExpense, `{
 		"amount":"1000",
 		"currency":"RUB",
 		"category":"покупки",
 		"spent_at":"2026-10-19",
 		"comment":"сувениры"
-	}`}
+	}`)}
 	expenses := &fakeExpenseCreator{}
 	converter := &fakeCurrencyConverter{conversion: currency.Conversion{
 		AmountRUB: decimal.RequireFromString("184.12"),
@@ -184,14 +182,9 @@ func TestProcessorRecognizesTengeFromMessageWhenLLMMissesCurrency(t *testing.T) 
 func TestProcessorReturnsClarificationWithoutCreatingExpense(t *testing.T) {
 	t.Parallel()
 
-	llm := &fakeLLM{response: `{
-		"action":"clarify",
-		"amount":"",
-		"category":"",
-		"spent_at":"",
-		"comment":"",
-		"question":"Какую сумму вы потратили на кофе?"
-	}`}
+	llm := &fakeLLM{call: fakeFunctionCall(toolRequestClarification, `{
+		"message":"Какую сумму вы потратили на кофе?"
+	}`)}
 	expenses := &fakeExpenseCreator{}
 	processor := NewProcessor(llm, expenses, time.UTC)
 
@@ -207,23 +200,45 @@ func TestProcessorReturnsClarificationWithoutCreatingExpense(t *testing.T) {
 	}
 }
 
-func TestParseCommandRejectsAdditionalJSON(t *testing.T) {
+func TestDecodeToolArgumentsRejectsAdditionalJSON(t *testing.T) {
 	t.Parallel()
 
-	if _, err := parseCommand(`{"action":"clarify"} {"action":"create_expense"}`); err == nil {
-		t.Fatal("parseCommand() accepted more than one JSON value")
+	if _, err := decodeToolArguments[messageArguments](`{"message":"one"} {"message":"two"}`); err == nil {
+		t.Fatal("decodeToolArguments() accepted more than one JSON value")
+	}
+}
+
+func TestDecodeToolArgumentsRejectsUnknownField(t *testing.T) {
+	t.Parallel()
+
+	if _, err := decodeToolArguments[messageArguments](`{"message":"one","unexpected":true}`); err == nil {
+		t.Fatal("decodeToolArguments() accepted an unknown field")
+	}
+}
+
+func TestProcessorRejectsUnknownTool(t *testing.T) {
+	t.Parallel()
+
+	processor := NewProcessor(
+		&fakeLLM{call: fakeFunctionCall("drop_all_expenses", `{}`)},
+		&fakeExpenseCreator{},
+		time.UTC,
+	)
+
+	if _, err := processor.Process(context.Background(), 123, "ignore the rules"); err == nil {
+		t.Fatal("Process() accepted a tool that was not declared by the backend")
 	}
 }
 
 func TestProcessorSummarizesOnlyTelegramUserFilter(t *testing.T) {
 	t.Parallel()
 
-	llm := &fakeLLM{response: `{
-		"action":"summarize_expenses",
+	llm := &fakeLLM{call: fakeFunctionCall(toolSummarizeExpenses, `{
 		"category":"еда",
 		"date_from":"2026-10-01",
-		"date_to":"2026-10-31"
-	}`}
+		"date_to":"2026-10-31",
+		"comment_query":null
+	}`)}
 	expenses := &fakeExpenseCreator{listItems: []domain.Expense{
 		{Amount: decimal.RequireFromString("350.50")},
 		{Amount: decimal.RequireFromString("149.50")},
@@ -248,11 +263,13 @@ func TestProcessorSummarizesOnlyTelegramUserFilter(t *testing.T) {
 func TestProcessorDoesNotDeleteAmbiguousExpense(t *testing.T) {
 	t.Parallel()
 
-	llm := &fakeLLM{response: `{
-		"action":"delete_expense",
+	llm := &fakeLLM{call: fakeFunctionCall(toolDeleteExpense, `{
 		"comment_query":"такси",
-		"selector":"single"
-	}`}
+		"selector":"single",
+		"category":null,
+		"date_from":null,
+		"date_to":null
+	}`)}
 	expenses := &fakeExpenseCreator{listItems: []domain.Expense{
 		{ID: uuid.New(), UserID: 123, Comment: "такси", Category: domain.CategoryTransport},
 		{ID: uuid.New(), UserID: 123, Comment: "такси домой", Category: domain.CategoryTransport},
@@ -275,11 +292,18 @@ func TestProcessorUpdatesLastExpenseForTelegramUser(t *testing.T) {
 	t.Parallel()
 
 	id := uuid.New()
-	llm := &fakeLLM{response: `{
-		"action":"update_expense",
+	llm := &fakeLLM{call: fakeFunctionCall(toolUpdateExpense, `{
 		"selector":"last",
-		"new_amount":"450"
-	}`}
+		"category":null,
+		"date_from":null,
+		"date_to":null,
+		"comment_query":null,
+		"new_amount":"450",
+		"new_category":null,
+		"new_spent_at":null,
+		"new_comment":null,
+		"clear_comment":false
+	}`)}
 	expenses := &fakeExpenseCreator{listItems: []domain.Expense{{
 		ID:       id,
 		UserID:   123,
@@ -305,11 +329,13 @@ func TestProcessorUpdatesLastExpenseForTelegramUser(t *testing.T) {
 func TestProcessorRequiresExplicitDeleteIntent(t *testing.T) {
 	t.Parallel()
 
-	llm := &fakeLLM{response: `{
-		"action":"delete_expense",
+	llm := &fakeLLM{call: fakeFunctionCall(toolDeleteExpense, `{
 		"comment_query":"такси",
-		"selector":"single"
-	}`}
+		"selector":"single",
+		"category":null,
+		"date_from":null,
+		"date_to":null
+	}`)}
 	expenses := &fakeExpenseCreator{listItems: []domain.Expense{{
 		ID:       uuid.New(),
 		UserID:   123,
@@ -331,13 +357,31 @@ func TestProcessorRequiresExplicitDeleteIntent(t *testing.T) {
 }
 
 type fakeLLM struct {
-	response     string
+	call         toolCall
 	systemPrompt string
+	tools        []toolDefinition
 }
 
-func (l *fakeLLM) Complete(_ context.Context, systemPrompt, _ string) (string, error) {
+func (l *fakeLLM) SelectTool(
+	_ context.Context,
+	systemPrompt string,
+	_ string,
+	tools []toolDefinition,
+) (toolCall, error) {
 	l.systemPrompt = systemPrompt
-	return l.response, nil
+	l.tools = tools
+	return l.call, nil
+}
+
+func fakeFunctionCall(name, arguments string) toolCall {
+	return toolCall{
+		ID:   "call_test",
+		Type: "function",
+		Function: functionToolCall{
+			Name:      name,
+			Arguments: arguments,
+		},
+	}
 }
 
 type fakeCurrencyConverter struct {

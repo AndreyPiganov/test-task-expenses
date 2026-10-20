@@ -7,7 +7,6 @@ import (
 	"io"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/AndreyPiganov/test-task-expenses/backend/internal/domain"
@@ -55,50 +54,29 @@ type expensePageResponse struct {
 	Offset int               `json:"offset"`
 }
 
-func (a *api) expensesCollection(w http.ResponseWriter, r *http.Request) {
-	if a.expenses == nil {
-		writeJSON(w, http.StatusServiceUnavailable, errorResponse{Error: "service unavailable"})
-		return
-	}
+func (a *api) withExpenseService(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if a.expenses == nil {
+			writeJSON(w, http.StatusServiceUnavailable, errorResponse{Error: "service unavailable"})
+			return
+		}
 
-	switch r.Method {
-	case http.MethodGet:
-		a.listExpenses(w, r)
-	case http.MethodPost:
-		a.createExpense(w, r)
-	default:
-		methodNotAllowed(w, "GET, POST")
+		next(w, r)
 	}
 }
 
-func (a *api) expenseItem(w http.ResponseWriter, r *http.Request) {
-	if a.expenses == nil {
-		writeJSON(w, http.StatusServiceUnavailable, errorResponse{Error: "service unavailable"})
-		return
-	}
+func (a *api) withExpenseID(
+	next func(http.ResponseWriter, *http.Request, uuid.UUID),
+) http.HandlerFunc {
+	return a.withExpenseService(func(w http.ResponseWriter, r *http.Request) {
+		id, err := uuid.Parse(r.PathValue("id"))
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, errorResponse{Error: "invalid expense ID"})
+			return
+		}
 
-	idText := strings.TrimPrefix(r.URL.Path, "/api/v1/expenses/")
-	if idText == "" || strings.Contains(idText, "/") {
-		notFound(w, r)
-		return
-	}
-
-	id, err := uuid.Parse(idText)
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, errorResponse{Error: "invalid expense ID"})
-		return
-	}
-
-	switch r.Method {
-	case http.MethodGet:
-		a.getExpense(w, r, id)
-	case http.MethodPatch:
-		a.updateExpense(w, r, id)
-	case http.MethodDelete:
-		a.deleteExpense(w, r, id)
-	default:
-		methodNotAllowed(w, "GET, PATCH, DELETE")
-	}
+		next(w, r, id)
+	})
 }
 
 func (a *api) createExpense(w http.ResponseWriter, r *http.Request) {

@@ -15,14 +15,20 @@ func (p *Processor) updateExpense(
 	ctx context.Context,
 	userID int64,
 	message string,
-	command parsedCommand,
+	arguments updateExpenseArguments,
 ) (string, error) {
-	expense, clarification, err := p.selectExpense(ctx, userID, message, command)
+	expense, clarification, err := p.selectExpense(
+		ctx,
+		userID,
+		message,
+		arguments.Selector,
+		arguments.filter(),
+	)
 	if err != nil || clarification != "" {
 		return clarification, err
 	}
 
-	input, hasChanges, err := p.updateInput(command)
+	input, hasChanges, err := p.updateInput(arguments)
 	if err != nil {
 		return "", err
 	}
@@ -42,13 +48,19 @@ func (p *Processor) deleteExpense(
 	ctx context.Context,
 	userID int64,
 	message string,
-	command parsedCommand,
+	arguments deleteExpenseArguments,
 ) (string, error) {
 	if !hasDeleteIntent(message) {
 		return "Чтобы удалить расход, явно напишите «удали» и уточните, какой именно.", nil
 	}
 
-	expense, clarification, err := p.selectExpense(ctx, userID, message, command)
+	expense, clarification, err := p.selectExpense(
+		ctx,
+		userID,
+		message,
+		arguments.Selector,
+		arguments.filter(),
+	)
 	if err != nil || clarification != "" {
 		return clarification, err
 	}
@@ -64,13 +76,14 @@ func (p *Processor) selectExpense(
 	ctx context.Context,
 	userID int64,
 	message string,
-	command parsedCommand,
+	selector string,
+	filterArguments expenseFilterArguments,
 ) (domain.Expense, string, error) {
-	selector := strings.TrimSpace(command.Selector)
+	selector = strings.TrimSpace(selector)
 	if selector != selectorLast && selector != selectorSingle {
 		return domain.Expense{}, "Уточните расход: например, «последний» или его название и дату.", nil
 	}
-	if selector == selectorSingle && !commandHasFilter(command) {
+	if selector == selectorSingle && !argumentsHaveFilter(filterArguments) {
 		return domain.Expense{}, "Уточните, какой именно расход нужно изменить или удалить.", nil
 	}
 	if selector == selectorLast && !hasLastReference(message) {
@@ -81,7 +94,7 @@ func (p *Processor) selectExpense(
 	if selector == selectorLast {
 		limit = 1
 	}
-	filter, err := p.filterFromCommand(userID, command, limit)
+	filter, err := p.filterFromArguments(userID, filterArguments, limit)
 	if err != nil {
 		return domain.Expense{}, "", err
 	}
@@ -106,36 +119,36 @@ func (p *Processor) selectExpense(
 	return page.Items[0], "", nil
 }
 
-func (p *Processor) updateInput(command parsedCommand) (service.UpdateExpenseInput, bool, error) {
+func (p *Processor) updateInput(arguments updateExpenseArguments) (service.UpdateExpenseInput, bool, error) {
 	var input service.UpdateExpenseInput
 	hasChanges := false
 
-	if command.NewAmount != "" {
-		amount, err := decimal.NewFromString(command.NewAmount)
+	if newAmount := optionalString(arguments.NewAmount); newAmount != "" {
+		amount, err := decimal.NewFromString(newAmount)
 		if err != nil {
 			return input, false, fmt.Errorf("parse LLM new_amount: %w", err)
 		}
 		input.Amount = &amount
 		hasChanges = true
 	}
-	if command.NewCategory != "" {
-		category := domain.Category(command.NewCategory)
+	if newCategory := optionalString(arguments.NewCategory); newCategory != "" {
+		category := domain.Category(newCategory)
 		if !category.Valid() {
-			return input, false, fmt.Errorf("LLM returned unknown new_category %q", command.NewCategory)
+			return input, false, fmt.Errorf("LLM returned unknown new_category %q", newCategory)
 		}
 		input.Category = &category
 		hasChanges = true
 	}
-	if command.NewSpentAt != "" {
-		spentAt, err := time.ParseInLocation(dateLayout, command.NewSpentAt, p.timezone)
+	if newSpentAt := optionalString(arguments.NewSpentAt); newSpentAt != "" {
+		spentAt, err := time.ParseInLocation(dateLayout, newSpentAt, p.timezone)
 		if err != nil {
 			return input, false, fmt.Errorf("parse LLM new_spent_at: %w", err)
 		}
 		input.SpentAt = &spentAt
 		hasChanges = true
 	}
-	if command.NewComment != "" || command.ClearComment {
-		comment := command.NewComment
+	if arguments.NewComment != nil || arguments.ClearComment {
+		comment := optionalString(arguments.NewComment)
 		input.Comment = &comment
 		hasChanges = true
 	}
@@ -143,9 +156,9 @@ func (p *Processor) updateInput(command parsedCommand) (service.UpdateExpenseInp
 	return input, hasChanges, nil
 }
 
-func commandHasFilter(command parsedCommand) bool {
-	return command.Category != "" || command.DateFrom != "" || command.DateTo != "" ||
-		strings.TrimSpace(command.CommentQuery) != ""
+func argumentsHaveFilter(arguments expenseFilterArguments) bool {
+	return optionalString(arguments.Category) != "" || optionalString(arguments.DateFrom) != "" ||
+		optionalString(arguments.DateTo) != "" || optionalString(arguments.CommentQuery) != ""
 }
 
 func hasDeleteIntent(message string) bool {
